@@ -249,6 +249,58 @@ func TestRepublishOrRecreateSubscriptions(t *testing.T) {
 	})
 }
 
+// TestReconnectRecoversRegisteredSubscriptions guards against the reconnect
+// state machine (client.go) silently abandoning subscriptions.
+//
+// Both reconnect paths funnel their registered subscription ids through
+// transferSubscriptions into republishOrRecreateSubscriptions:
+//   - recreateSession builds a new session and always did so.
+//   - restoreSession reactivates the same session and now does too, because a
+//     Republish alone does not make servers resume delivery after the secure
+//     channel was rebuilt.
+//
+// If that step is handed nothing (as restoreSession used to do by jumping
+// straight to restoreSubscriptions) it returns action==none and activeSubs==0,
+// which marks the client Connected while the subscription is left registered
+// but untouched and the publish loop stays paused forever: the production hang
+// reported for short network blips.
+func TestReconnectRecoversRegisteredSubscriptions(t *testing.T) {
+	t.Run("empty input strands a registered subscription", func(t *testing.T) {
+		c, err := NewClient("opc.tcp://example.com:4840")
+		require.NoError(t, err)
+
+		stub := &stubClient{send: recreateResponder(4711, ua.StatusOK)}
+		newTestSubscription(t, c, stub, 1)
+
+		// The regression: recovering with nothing to do leaves subscription 1
+		// registered under its old id, never republished or recreated, while
+		// the caller reads this as "everything recovered".
+		action, activeSubs := c.republishOrRecreateSubscriptions(context.Background(), nil, nil, nil)
+
+		require.Equal(t, none, action)
+		require.Equal(t, 0, activeSubs)
+		require.Equal(t, []uint32{1}, c.SubscriptionIDs(), "subscription must not be silently abandoned")
+	})
+
+	t.Run("registered subscription ids are recovered", func(t *testing.T) {
+		c, err := NewClient("opc.tcp://example.com:4840")
+		require.NoError(t, err)
+
+		stub := &stubClient{send: recreateResponder(4711, ua.StatusOK)}
+		newTestSubscription(t, c, stub, 1)
+
+		// Fed the ids the way transferSubscriptions feeds them, the
+		// subscription is processed: republish fails (no session/channel) and
+		// falls back to recreate, so activeSubs > 0 and the reconnect loop
+		// resumes the publish loop.
+		action, activeSubs := c.republishOrRecreateSubscriptions(context.Background(), c.SubscriptionIDs(), nil, map[uint32][]uint32{})
+
+		require.Equal(t, none, action)
+		require.Greater(t, activeSubs, 0, "activeSubs must be > 0 so the publish loop is resumed")
+		require.Equal(t, []uint32{4711}, c.SubscriptionIDs(), "subscription must have been recreated, not abandoned")
+	})
+}
+
 // errorCount reads the current value of the named counter in the global
 // stats.Error() expvar map, treating a missing counter as zero.
 func errorCount(key string) int64 {

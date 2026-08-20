@@ -475,7 +475,17 @@ func (c *Client) monitor(ctx context.Context) {
 						}
 						dlog.Printf("namespaces updated")
 
-						action = restoreSubscriptions
+						// Recover subscriptions via transferSubscriptions, exactly
+						// like recreateSession does. ActivateSession reactivated the
+						// same session, but after the secure channel was rebuilt real
+						// servers stop delivering notifications until the
+						// subscription is re-bound with TransferSubscriptions; a
+						// plain Republish is not enough and leaves the client
+						// Connected with a silently dead subscription.
+						// transferSubscriptions also populates
+						// subsToRepublish/subsToRecreate/availableSeqs and recreates
+						// subscriptions the server can no longer transfer.
+						action = transferSubscriptions
 
 					case recreateSession:
 						dlog.Printf("action: recreateSession")
