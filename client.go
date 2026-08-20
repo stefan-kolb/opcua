@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"reflect"
+	rtdebug "runtime/debug"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -254,8 +255,42 @@ const (
 	abortReconnect        // the reconnecting is not possible
 )
 
+// logOPCUABuildInfoOnce guards the one-shot build-info log.
+var logOPCUABuildInfoOnce sync.Once
+
+// logOPCUABuildInfo prints, exactly once, the version of the
+// github.com/gopcua/opcua module that is actually compiled into the running
+// binary (honouring any replace directive). Temporary diagnostic to settle the
+// "is the fix really in the binary?" question around issue #895: it reads the
+// embedded build info, so it reflects the real artifact, not go.mod.
+func logOPCUABuildInfo() {
+	logOPCUABuildInfoOnce.Do(func() {
+		bi, ok := rtdebug.ReadBuildInfo()
+		if !ok {
+			log.Printf("gopcua/opcua build: build info unavailable")
+			return
+		}
+		for _, d := range bi.Deps {
+			if d.Path == "github.com/gopcua/opcua" {
+				v := d.Version
+				if d.Replace != nil {
+					v = d.Replace.Path + "@" + d.Replace.Version
+				}
+				log.Printf("gopcua/opcua build: %s", v)
+				return
+			}
+		}
+		log.Printf("gopcua/opcua build: main module (not a dependency)")
+	})
+}
+
 // Connect establishes a secure channel and creates a new session.
 func (c *Client) Connect(ctx context.Context) error {
+	// TEMP DIAGNOSTIC (issue #895 follow-up): print the actually-compiled
+	// opcua module version once, so a running binary can be checked against
+	// the intended source without needing `go version -m`.
+	logOPCUABuildInfo()
+
 	// todo(fs): the secure channel is 'nil' during a re-connect
 	// todo(fs): but we expect this method to be called once during startup
 	// todo(fs): so this is probably safe
@@ -475,6 +510,10 @@ func (c *Client) monitor(ctx context.Context) {
 						}
 						dlog.Printf("namespaces updated")
 
+						// TEMP DIAGNOSTIC (issue #895): unconditional marker so a
+						// running binary proves whether this fixed code path executes.
+						log.Printf("gopcua reconnect: restoreSession OK -> transferSubscriptions (%d subscriptions: %v)", len(c.SubscriptionIDs()), c.SubscriptionIDs())
+
 						// Recover subscriptions via transferSubscriptions, exactly
 						// like recreateSession does. ActivateSession reactivated the
 						// same session, but after the secure channel was rebuilt real
@@ -572,6 +611,9 @@ func (c *Client) monitor(ctx context.Context) {
 					case restoreSubscriptions:
 						dlog.Printf("action: restoreSubscriptions")
 
+						// TEMP DIAGNOSTIC (issue #895): unconditional marker.
+						log.Printf("gopcua reconnect: restoreSubscriptions (republish=%v recreate=%v)", subsToRepublish, subsToRecreate)
+
 						// try to republish the previous subscriptions from the server
 						// otherwise restore them.
 						// Assume that subsToRecreate and subsToRepublish have been
@@ -620,13 +662,14 @@ func (c *Client) monitor(ctx context.Context) {
 			default:
 				dlog.Printf("no subscriptions to resume")
 			}
+			// TEMP DIAGNOSTIC (issue #895): unconditional marker of the outcome.
+			log.Printf("gopcua reconnect: done, activeSubs=%d (publish loop %s)", activeSubs, map[bool]string{true: "RESUMED", false: "left paused"}[activeSubs > 0])
 		}
 	}
 }
 
 // Dial establishes a secure channel.
-func (c *Client) Dial(ctx context.Context) error {
-	stats.Client().Add("Dial", 1)
+func (c *Client) Dial(ctx context.Context) error {	stats.Client().Add("Dial", 1)
 
 	if c.SecureChannel() != nil {
 		return errors.Errorf("secure channel already connected")
