@@ -33,7 +33,7 @@ func NewPrefixLogger(format string, args ...interface{}) *log.Logger {
 	if !Enable {
 		return log.New(io.Discard, "", 0)
 	}
-	return log.New(os.Stderr, "debug: "+fmt.Sprintf(format, args...), 0)
+	return log.New(Logger.Writer(), "debug: "+fmt.Sprintf(format, args...), 0)
 }
 
 // Printf logs the message with Logger.Printf() when debug logging is enabled.
